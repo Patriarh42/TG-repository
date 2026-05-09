@@ -1,81 +1,74 @@
 import os
 import requests
 
-class GoldForum:
-    def __init__(self, base_url=None):
-        self.base = (base_url or os.getenv("GOLDFORUM_URL", "http://23.111.103.231")).rstrip('/')
-        self.session = requests.Session()
-        self.authenticated = False
+API_BASE = os.getenv("GOLDFORUM_URL", "http://23.111.103.231")
 
+
+class GoldForumClient:
+    def __init__(self, username=None, password=None):
+        self.base = API_BASE.rstrip('/')
+        self.session = requests.Session()
+        self.username = username
+        self.password = password
+        self.authenticated = False
+        
+        if username and password:
+            self.login(username, password)
+    
     def login(self, username, password):
-        r = self.session.post(f"{self.base}/api/v1/auth/login", json={"username": username, "password": password}, timeout=30)
-        data = r.json()
+        response = self.session.post(
+            f"{self.base}/api/v1/auth/login",
+            json={"username": username, "password": password},
+            timeout=10
+        )
+        data = response.json()
         if data.get("success"):
             self.authenticated = True
-            print(f"✓ Вошли как {username}")
-        return data
-
-    def logout(self):
-        self.session.post(f"{self.base}/api/v1/auth/logout", timeout=30)
-        self.authenticated = False
-        print("✓ Вышли")
-
-    def get_post(self, post_id):
-        return self.session.get(f"{self.base}/api/v1/posts/{post_id}/metadata", timeout=30).json()
-
-    def import_post(self, zip_path):
-        if not os.path.exists(zip_path):
-            return {"success": False, "error": "Файл не найден"}
-        with open(zip_path, 'rb') as f:
-            files = {'zip_file': (os.path.basename(zip_path), f, 'application/zip')}
-            return self.session.post(f"{self.base}/api/v1/posts/import", files=files, timeout=60).json()
-
-    def export_post(self, post_id, output=None):
-        r = self.session.get(f"{self.base}/api/v1/posts/{post_id}/export", timeout=60)
-        if r.ok:
-            out = output or f"data/post_{post_id}.zip"
-            os.makedirs("data", exist_ok=True)
-            with open(out, 'wb') as f: f.write(r.content)
-            print(f"✓ Сохранено: {out}")
+            self.username = username
+            self.password = password
             return True
         return False
-
-    def bulk_export(self, post_ids, output="data/posts.zip"):
-        r = self.session.post(f"{self.base}/api/v1/posts/export/bulk", json={"post_ids": post_ids}, timeout=120)
-        if r.ok:
-            os.makedirs("data", exist_ok=True)
-            with open(output, 'wb') as f: f.write(r.content)
-            print(f"✓ Экспортировано: {output}")
-            return True
-        return False
-
+    
+    def get_post_metadata(self, post_id):
+        response = self.session.get(
+            f"{self.base}/api/v1/posts/{post_id}/metadata",
+            timeout=30
+        )
+        return response.json()
+    
+    def export_post(self, post_id):
+        response = self.session.get(
+            f"{self.base}/api/v1/posts/{post_id}/export",
+            timeout=60
+        )
+        if response.status_code == 200:
+            return response.content
+        return None
+    
+    def export_favorites(self, username, password):
+        response = self.session.post(
+            f"{self.base}/api/v1/users/{username}/favorites/export",
+            json={"password": password},
+            timeout=120
+        )
+        if response.status_code == 200:
+            return response.content
+        return None
+    
     def get_comments(self, post_id):
-        return self.session.get(f"{self.base}/api/v1/posts/{post_id}/comments", timeout=30).json()
-
-    def add_comment(self, post_id, text):
-        return self.session.post(f"{self.base}/api/v1/posts/{post_id}/comments", json={"content": text}, timeout=30).json()
-
-    def delete_comment(self, comment_id):
-        return self.session.delete(f"{self.base}/api/v1/comments/{comment_id}, timeout=30).json()
-
-    def like(self, post_id):
-        return self.session.post(f"{self.base}/api/v1/posts/{post_id}/like", timeout=30).json()
-
-    def toggle(self, post_id, action):
-        return self.session.post(f"{self.base}/api/interactions/toggle", json={"post_id": post_id, "action": action}, timeout=30).json()
-
-    def status(self, post_id):
-        return self.session.get(f"{self.base}/api/interactions/post/{post_id}/status", timeout=30).json()
-
-    def export_favorites(self, username, password, output=None):
-        out = output or f"data/{username}_favorites.zip"
-        os.makedirs("data", exist_ok=True)
-        r = self.session.post(f"{self.base}/api/v1/users/{username}/favorites/export", json={"password": password}, timeout=120)
-        if r.ok:
-            with open(out, 'wb') as f: f.write(r.content)
-            print(f"✓ Избранное: {out}")
-            return True
-        return False
-
+        response = self.session.get(
+            f"{self.base}/api/v1/posts/{post_id}/comments",
+            timeout=30
+        )
+        return response.json()
+    
+    def add_comment(self, post_id, content):
+        response = self.session.post(
+            f"{self.base}/api/v1/posts/{post_id}/comments",
+            json={"content": content},
+            timeout=30
+        )
+        return response.json()
+    
     def close(self):
         self.session.close()
