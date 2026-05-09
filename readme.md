@@ -1,15 +1,16 @@
-# GoldForum API Client
+# GoldForum Email Bot
 
-Python-клиент для работы с GoldForum API.
+Email-бот для работы с GoldForum API через почту.
 
-## Структура
-├── data/ # Экспортируемые файлы
+## 📁 Структура
+
+├── data/ # Экспортируемые ZIP-архивы
 ├── src/
-│ ├── client.py # Основной клиент
-│ └── database/ # База данных
+│ ├── client.py # API клиент
+│ └── database/ # База данных SQLite
 ├── app.py # Точка входа
 └── requirements.txt
 
-## Установка
+## ⚙️ Установка
 ```bash
 pip install -r requirements.txt
