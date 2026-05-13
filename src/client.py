@@ -8,10 +8,6 @@ class GoldForumClient:
     def __init__(self, username=None, password=None):
         self.base = API_BASE.rstrip('/')
         self.session = requests.Session()
-        self.username = username
-        self.password = password
-        self.authenticated = False
-        
         if username and password:
             self.login(username, password)
     
@@ -22,19 +18,7 @@ class GoldForumClient:
             timeout=10
         )
         data = response.json()
-        if data.get("success"):
-            self.authenticated = True
-            self.username = username
-            self.password = password
-            return True
-        return False
-    
-    def get_post_metadata(self, post_id):
-        response = self.session.get(
-            f"{self.base}/api/v1/posts/{post_id}/metadata",
-            timeout=30
-        )
-        return response.json()
+        return data.get("success")
     
     def export_post(self, post_id):
         response = self.session.get(
