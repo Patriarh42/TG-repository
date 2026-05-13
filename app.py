@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import sqlite3
+import requests
 import imaplib
 import smtplib
 import email
@@ -9,55 +11,95 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from email.header import decode_header
 
-from src import GoldForumClient, Database
-
-BOT_EMAIL = os.getenv("BOT_EMAIL", "bot@example.com")
-BOT_PASSWORD = os.getenv("BOT_PASSWORD", "app_password")
+BOT_EMAIL = os.getenv("BOT_EMAIL", "your_bot@gmail.com")
+BOT_PASSWORD = os.getenv("BOT_PASSWORD", "your_app_password")
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-TMP_DIR = os.getenv("TMP_DIR", "data")
+API_BASE = "http://23.111.103.231"
+DB_FILE = "bot.db"
+TEMP_DIR = "tmp_exports"
 
-os.makedirs(TMP_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 ROADMAP = """Добро пожаловать в GoldForum Email Bot!
 
-📋 ДОРОЖНАЯ КАРТА
-Команда пишется в ТЕМУ письма.
-Аргументы указываются в ТЕЛЕ письма через запятую и пробел: `, `
+ДОРОЖНАЯ КАРТА КОМАНД
+(Команда пишется в ТЕМУ письма. Аргументы указываются в ТЕЛЕ письма через запятую и пробел: `, `)
 
 1. запомни меня
-   Аргументы: username, password
-   Проверяет данные через API и сохраняет профиль.
+   Порядок аргументов: username, password
+   Проверяет данные через API и сохраняет их в боте.
 
 2. скачать избранные посты
-   Аргументы: не требуются
-   Отправляет ZIP-архив со всеми избранными постами.
+   Порядок аргументов: нет
+   Отправляет ZIP-архив со всеми вашими избранными постами.
 
 3. скачать пост по id
-   Аргументы: post_id
+   Порядок аргументов: post_id
    Отправляет ZIP-архив с указанным постом.
 
 4. получить комментарии к посту
-   Аргументы: post_id
-   Возвращает список комментариев текстом.
+   Порядок аргументов: post_id
+   Отправляет список комментариев текстом.
 
 5. добавить свой комментарий к посту
-   Аргументы: post_id, текст комментария
+   Порядок аргументов: post_id, текст_комментария
    Публикует комментарий от вашего имени.
+
+Все команды регистронезависимы.
 """
 
+def init_database():
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, username TEXT, password TEXT)")
+    connection.commit()
+    connection.close()
 
-def decode_text(raw_header):
-    if not raw_header:
-        return ""
-    decoded_parts = decode_header(raw_header)
-    return "".join(
-        part.decode(encoding or "utf-8", errors="ignore") if isinstance(part, bytes) else str(part)
-        for part, encoding in decoded_parts
-    )
+def get_user(email_address):
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("SELECT username, password FROM users WHERE email = ?", (email_address,))
+    result = cursor.fetchone()
+    connection.close()
+    return result
 
+def save_user(email_address, username, password):
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("INSERT OR REPLACE INTO users (email, username, password) VALUES (?, ?, ?)", (email_address, username, password))
+    connection.commit()
+    connection.close()
 
-def extract_body(msg):
+def api_login(username, password):
+    session = requests.Session()
+    response = session.post(f"{API_BASE}/api/v1/auth/login", json={"username": username, "password": password}, timeout=10)
+    data = response.json()
+    if data.get("success"):
+        return session
+    return None
+
+def send_email(to_address, subject, body, attachment_path=None):
+    message = MIMEMultipart()
+    message["From"] = BOT_EMAIL
+    message["To"] = to_address
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain", "utf-8"))
+
+    if attachment_path and os.path.exists(attachment_path):
+        with open(attachment_path, "rb") as f:
+            part = MIMEApplication(f.read(), Name=os.path.basename(attachment_path))
+        part["Content-Disposition"] = f'attachment; filename="{os.path.basename(attachment_path)}"'
+        message.attach(part)
+
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, 465) as server:
+            server.login(BOT_EMAIL, BOT_PASSWORD)
+            server.send_message(message)
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
+def get_body_content(msg):
     if msg.is_multipart():
         for part in msg.walk():
             if part.get_content_type() == "text/plain" and not part.get("Content-Disposition"):
@@ -70,184 +112,214 @@ def extract_body(msg):
             return payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
     return ""
 
-
-def send_reply(to_addr, subject, body, attach_path=None):
-    msg = MIMEMultipart()
-    msg["From"] = BOT_EMAIL
-    msg["To"] = to_addr
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    if attach_path and os.path.exists(attach_path):
-        with open(attach_path, "rb") as f:
-            file_part = MIMEApplication(f.read(), Name=os.path.basename(attach_path))
-        file_part["Content-Disposition"] = f'attachment; filename="{os.path.basename(attach_path)}"'
-        msg.attach(file_part)
-
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, 465) as server:
-            server.login(BOT_EMAIL, BOT_PASSWORD)
-            server.send_message(msg)
-    except Exception as e:
-        print(f"Ошибка отправки: {e}")
-
-
-def handle_remember(db, sender, args):
-    if len(args) != 2:
-        return "Ошибка: укажите логин и пароль через запятую. Пример: `ivan, mypass123`", None
-
-    username, password = args
-    client = GoldForumClient()
-    if not client.login(username, password):
-        return "Ошибка: неверный логин или пароль.", None
-
-    db.save_user(sender, username, password)
-    client.close()
-    return "Профиль успешно сохранён.", None
-
-
-def handle_favorites(db, sender, args):
-    user = db.get_user(sender)
-    if not user:
-        return "Вы не зарегистрированы. Отправьте команду `запомни меня`.", None
-
-    client = GoldForumClient(user[0], user[1])
-    content = client.export_favorites(user[0], user[1])
-    client.close()
+def process_remember_me(sender_email, body_args):
+    if len(body_args) != 2:
+        return "Ошибка: формат команды `запомни меня` требует username и password через запятую.", None
     
-    if not content:
-        return "Не удалось экспортировать избранное.", None
+    username = body_args[0]
+    password = body_args[1]
+    
+    session = api_login(username, password)
+    if not session:
+        return "Ошибка: Неверный логин или пароль.", None
+    
+    save_user(sender_email, username, password)
+    session.close()
+    
+    return "Профиль успешно сохранен.", None
 
-    path = os.path.join(TMP_DIR, f"{user[0]}_favorites.zip")
-    with open(path, "wb") as f:
-        f.write(content)
-    return "Избранные посты экспортированы. Файл прикреплён.", path
+def process_favorites(sender_email):
+    user_data = get_user(sender_email)
+    if not user_data:
+        return "Вы не зарегистрированы. Используйте команду `запомни меня`.", None
+    
+    username = user_data[0]
+    password = user_data[1]
+    
+    session = api_login(username, password)
+    if not session:
+        return "Ошибка авторизации.", None
+    
+    url = f"{API_BASE}/api/v1/users/{username}/favorites/export"
+    response = session.post(url, json={"password": password}, timeout=60)
+    session.close()
+    
+    if response.status_code != 200:
+        return "Ошибка при экспорте избранного.", None
+    
+    file_path = os.path.join(TEMP_DIR, f"{username}_favorites.zip")
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+    
+    return "Ваши избранные посты готовы.", file_path
 
-
-def handle_download_post(db, sender, args):
-    user = db.get_user(sender)
-    if not user:
+def process_download_post(sender_email, body_args):
+    user_data = get_user(sender_email)
+    if not user_data:
         return "Вы не зарегистрированы.", None
-    if len(args) != 1 or not args[0].isdigit():
-        return "Укажите корректный ID поста. Пример: `42`", None
-
-    client = GoldForumClient(user[0], user[1])
-    content = client.export_post(args[0])
-    client.close()
     
-    if not content:
-        return f"Пост #{args[0]} не найден.", None
+    if len(body_args) != 1 or not body_args[0].isdigit():
+        return "Ошибка: укажите корректный post_id.", None
+    
+    post_id = body_args[0]
+    username = user_data[0]
+    password = user_data[1]
+    
+    session = api_login(username, password)
+    if not session:
+        return "Ошибка авторизации.", None
+    
+    url = f"{API_BASE}/api/v1/posts/{post_id}/export"
+    response = session.get(url, timeout=60)
+    session.close()
+    
+    if response.status_code != 200:
+        return f"Ошибка: пост с ID {post_id} не найден.", None
+    
+    file_path = os.path.join(TEMP_DIR, f"post_{post_id}.zip")
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+    
+    return f"Пост {post_id} экспортирован.", file_path
 
-    path = os.path.join(TMP_DIR, f"post_{args[0]}.zip")
-    with open(path, "wb") as f:
-        f.write(content)
-    return f"Пост #{args[0]} экспортирован. Файл прикреплён.", path
-
-
-def handle_get_comments(db, sender, args):
-    user = db.get_user(sender)
-    if not user:
+def process_get_comments(sender_email, body_args):
+    user_data = get_user(sender_email)
+    if not user_data:
         return "Вы не зарегистрированы.", None
-    if len(args) != 1 or not args[0].isdigit():
-        return "Укажите ID поста. Пример: `15`", None
-
-    client = GoldForumClient(user[0], user[1])
-    data = client.get_comments(args[0])
-    client.close()
     
+    if len(body_args) != 1 or not body_args[0].isdigit():
+        return "Ошибка: укажите корректный post_id.", None
+    
+    post_id = body_args[0]
+    username = user_data[0]
+    password = user_data[1]
+    
+    session = api_login(username, password)
+    if not session:
+        return "Ошибка авторизации.", None
+    
+    url = f"{API_BASE}/api/v1/posts/{post_id}/comments"
+    response = session.get(url, timeout=30)
+    session.close()
+    
+    if response.status_code != 200:
+        return "Не удалось получить комментарии.", None
+    
+    data = response.json()
     if not data.get("success"):
-        return data.get("error", "Неизвестная ошибка"), None
-
+        return "Ошибка API при получении комментариев.", None
+    
     comments = data.get("comments", [])
     if not comments:
-        return f"К посту #{args[0]} нет комментариев.", None
-
-    text = f"Комментарии к посту #{args[0]}:\n\n"
-    for c in comments:
-        text += f"👤 {c['username']}\n{c['content']}\n🕒 {c['created_at']}\n{'─' * 30}\n"
-    return text, None
-
-
-def handle_add_comment(db, sender, args):
-    user = db.get_user(sender)
-    if not user:
-        return "Вы не зарегистрированы.", None
-    if len(args) < 2:
-        return "Формат: `post_id, текст комментария`", None
-
-    post_id = args[0]
-    comment_text = ", ".join(args[1:])
-    if not post_id.isdigit():
-        return "ID поста должен быть числом.", None
-
-    client = GoldForumClient(user[0], user[1])
-    result = client.add_comment(post_id, comment_text)
-    client.close()
+        return f"К посту {post_id} нет комментариев.", None
     
-    if result.get("success"):
-        return f"Комментарий добавлен к посту #{post_id}.", None
-    return result.get("error", "Ошибка публикации"), None
+    message_text = f"Комментарии к посту {post_id}:\n\n"
+    for item in comments:
+        message_text += f"{item['username']}: {item['content']}\n"
+    
+    return message_text, None
 
-
-COMMANDS = {
-    "запомни меня": handle_remember,
-    "скачать избранные посты": handle_favorites,
-    "скачать пост по id": handle_download_post,
-    "получить комментарии к посту": handle_get_comments,
-    "добавить свой комментарий к посту": handle_add_comment
-}
-
+def process_add_comment(sender_email, body_args):
+    user_data = get_user(sender_email)
+    if not user_data:
+        return "Вы не зарегистрированы.", None
+    
+    if len(body_args) < 2:
+        return "Ошибка: формат `post_id, текст`.", None
+    
+    post_id = body_args[0]
+    comment_text = ", ".join(body_args[1:])
+    
+    if not post_id.isdigit():
+        return "Ошибка: post_id должен быть числом.", None
+    
+    username = user_data[0]
+    password = user_data[1]
+    
+    session = api_login(username, password)
+    if not session:
+        return "Ошибка авторизации.", None
+    
+    url = f"{API_BASE}/api/v1/posts/{post_id}/comments"
+    response = session.post(url, json={"content": comment_text}, timeout=30)
+    session.close()
+    
+    if response.status_code != 200:
+        return "Не удалось добавить комментарий.", None
+    
+    data = response.json()
+    if data.get("success"):
+        return f"Комментарий добавлен к посту {post_id}.", None
+    else:
+        return data.get("error", "Ошибка публикации."), None
 
 def run_bot():
-    db = Database()
-    print("📬 Бот запущен. Ожидание писем...")
-
+    init_database()
+    print("Бот запущен.")
+    
     while True:
         try:
             mail = imaplib.IMAP4_SSL(IMAP_HOST)
             mail.login(BOT_EMAIL, BOT_PASSWORD)
             mail.select("inbox")
-
+            
             status, message_ids = mail.search(None, "UNSEEN")
-            if status == "OK" and message_ids[0]:
+            if status == "OK":
                 for msg_id in message_ids[0].split():
                     status, msg_data = mail.fetch(msg_id, "(RFC822)")
                     raw_email = msg_data[0][1]
                     msg = email.message_from_bytes(raw_email)
-
-                    sender_raw = decode_text(msg.get("From"))
-                    subject = decode_text(msg.get("Subject")).strip().lower()
-                    body = extract_body(msg).strip()
-
-                    email_match = re.search(r"[\w\.-]+@[\w\.-]+", sender_raw)
-                    sender_email = email_match.group(0) if email_match else sender_raw
-
-                    is_registered = db.get_user(sender_email) is not None
-
-                    if not is_registered or subject not in COMMANDS:
-                        status_msg = "✅ Вы уже зарегистрированы." if is_registered else "⚠️ Вы ещё не зарегистрированы."
-                        send_reply(sender_email, "🤖 GoldForum Bot", f"{status_msg}\n\n{ROADMAP}")
+                    
+                    from_header = msg.get("From")
+                    decoded_from = decode_header(from_header)[0][0]
+                    if isinstance(decoded_from, bytes):
+                        decoded_from = decoded_from.decode("utf-8", errors="ignore")
+                    
+                    email_match = re.search(r"[\w\.-]+@[\w\.-]+", decoded_from)
+                    sender_email = email_match.group(0) if email_match else decoded_from
+                    
+                    subject = msg.get("Subject")
+                    decoded_subject = decode_header(subject)[0][0]
+                    if isinstance(decoded_subject, bytes):
+                        decoded_subject = decoded_subject.decode("utf-8", errors="ignore")
+                    subject = decoded_subject.strip().lower()
+                    
+                    body = get_body_content(msg).strip()
+                    body_args = [arg.strip() for arg in body.split(",")] if body else []
+                    
+                    user_data = get_user(sender_email)
+                    
+                    if not user_data:
+                        send_email(sender_email, "GoldForum Bot", f"Вы не зарегистрированы.\n\n{ROADMAP}")
                         mail.store(msg_id, "+FLAGS", "\\Seen")
                         continue
-
-                    args = [a.strip() for a in body.split(", ")] if body else []
-                    handler = COMMANDS[subject]
-                    reply_text, attach_path = handler(db, sender_email, args)
-
-                    send_reply(sender_email, f"🤖 Ответ: {subject}", reply_text, attach_path)
-
-                    if attach_path and os.path.exists(attach_path):
-                        os.remove(attach_path)
-
+                    
+                    if subject == "запомни меня":
+                        reply, file = process_remember_me(sender_email, body_args)
+                    elif subject == "скачать избранные посты":
+                        reply, file = process_favorites(sender_email)
+                    elif subject == "скачать пост по id":
+                        reply, file = process_download_post(sender_email, body_args)
+                    elif subject == "получить комментарии к посту":
+                        reply, file = process_get_comments(sender_email, body_args)
+                    elif subject == "добавить свой комментарий к посту":
+                        reply, file = process_add_comment(sender_email, body_args)
+                    else:
+                        reply = f"Неизвестная команда.\n\n{ROADMAP}"
+                        file = None
+                    
+                    send_email(sender_email, f"Ответ: {subject}", reply, file)
+                    
+                    if file and os.path.exists(file):
+                        os.remove(file)
+                        
                     mail.store(msg_id, "+FLAGS", "\\Seen")
-                    print(f"Обработано: {sender_email} | {subject}")
-
+            
             mail.logout()
         except Exception as e:
-            print(f"⚠️ Ошибка: {e}")
-
+            print(f"Ошибка: {e}")
+        
         time.sleep(10)
-
 
 if __name__ == "__main__":
     run_bot()
