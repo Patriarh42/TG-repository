@@ -26,17 +26,22 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
     
-    async def save_user(self, telegram_id, phone=None, username=None, password=None, is_registered=False):
+    async def save_user(self, telegram_id, phone=None, username=None, password=None, is_registered=None):
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
             existing = await cursor.fetchone()
             
             if existing:
                 await db.execute("""
-                    UPDATE users SET phone=?, username=?, password=?, is_registered=? WHERE telegram_id=?
+                    UPDATE users SET
+                        phone=COALESCE(?, phone),
+                        username=COALESCE(?, username),
+                        password=COALESCE(?, password),
+                        is_registered=COALESCE(?, is_registered)
+                    WHERE telegram_id=?
                 """, (phone, username, password, is_registered, telegram_id))
             else:
                 await db.execute("""
-                    INSERT INTO users (telegram_id, phone, username, password, is_registered) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO users (telegram_id, phone, username, password, is_registered) VALUES (?, ?, ?, ?, COALESCE(?, 0))
                 """, (telegram_id, phone, username, password, is_registered))
             await db.commit()

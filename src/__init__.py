@@ -1,4 +1,4 @@
-from .client import GoldForumClient
+from .client import APIClient
 from .database import Database
 
-__all__ = ['GoldForumClient', 'Database']
+__all__ = ['APIClient', 'Database']
