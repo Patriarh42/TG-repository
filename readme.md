@@ -1,6 +1,6 @@
 # GoldForum Email Bot
 
-Email-бот для работы с GoldForum API через почту.
+Email-бот для работы с GoldForum API через telegram.
 
 ## 📁 Структура
 
