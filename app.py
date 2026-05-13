@@ -11,7 +11,7 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from email.header import decode_header
 
-BOT_EMAIL = os.getenv("BOT_EMAIL", "your_bot@gmail.com")
+BOT_EMAIL = os.getenv("BOT_EMAIL", "yourbot@gmail.com")
 BOT_PASSWORD = os.getenv("BOT_PASSWORD", "your_app_password")
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
