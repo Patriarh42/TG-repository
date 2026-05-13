@@ -1,58 +1,79 @@
-import os
-import requests
+import aiohttp
+import logging
 
-API_BASE = os.getenv("GOLDFORUM_URL", "http://23.111.103.231")
+logger = logging.getLogger(__name__)
 
-
-class GoldForumClient:
-    def __init__(self, username=None, password=None):
-        self.base = API_BASE.rstrip('/')
-        self.session = requests.Session()
-        if username and password:
-            self.login(username, password)
+class APIClient:
+    def __init__(self, base_url):
+        self.base_url = base_url.rstrip('/')
+        self.session = None
     
-    def login(self, username, password):
-        response = self.session.post(
-            f"{self.base}/api/v1/auth/login",
-            json={"username": username, "password": password},
-            timeout=10
-        )
-        data = response.json()
-        return data.get("success")
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
     
-    def export_post(self, post_id):
-        response = self.session.get(
-            f"{self.base}/api/v1/posts/{post_id}/export",
-            timeout=60
-        )
-        if response.status_code == 200:
-            return response.content
-        return None
+    async def check_phone_registered(self, phone):
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.base_url}/users/check_phone", params={"phone": phone}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('is_registered', False)
+                return False
+        except Exception as e:
+            logger.error(e)
+            return False
     
-    def export_favorites(self, username, password):
-        response = self.session.post(
-            f"{self.base}/api/v1/users/{username}/favorites/export",
-            json={"password": password},
-            timeout=120
-        )
-        if response.status_code == 200:
-            return response.content
-        return None
+    async def auth_user(self, username, password):
+        try:
+            session = await self._get_session()
+            async with session.post(f"{self.base_url}/auth/login", json={"username": username, "password": password}) as resp:
+                return resp.status in (200, 201)
+        except Exception as e:
+            logger.error(e)
+            return False
     
-    def get_comments(self, post_id):
-        response = self.session.get(
-            f"{self.base}/api/v1/posts/{post_id}/comments",
-            timeout=30
-        )
-        return response.json()
+    async def get_favorites(self, username):
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.base_url}/users/{username}/favorites") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('posts', [])
+                return []
+        except Exception as e:
+            logger.error(e)
+            return []
     
-    def add_comment(self, post_id, content):
-        response = self.session.post(
-            f"{self.base}/api/v1/posts/{post_id}/comments",
-            json={"content": content},
-            timeout=30
-        )
-        return response.json()
+    async def get_post(self, post_id):
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.base_url}/posts/{post_id}") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"id": post_id, "error": "Not found"}
+        except Exception as e:
+            logger.error(e)
+            return {"id": post_id, "error": str(e)}
     
-    def close(self):
-        self.session.close()
+    async def get_comments(self, post_id):
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.base_url}/posts/{post_id}/comments") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('comments', [])
+                return []
+        except Exception as e:
+            logger.error(e)
+            return []
+    
+    async def add_comment(self, post_id, text, username):
+        try:
+            session = await self._get_session()
+            async with session.post(f"{self.base_url}/posts/{post_id}/comments", json={"text": text, "author": username}) as resp:
+                return resp.status in (200, 201)
+        except Exception as e:
+            logger.error(e)
+            return False
