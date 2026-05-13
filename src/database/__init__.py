@@ -4,35 +4,33 @@ import os
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 
-class Database:
-    def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH)
-        self._create_tables()
+class UserDatabase:
+    def __init__(self, path=None):
+        self.path = path or DB_PATH
+        self._init()
     
-    def _create_tables(self):
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                email TEXT PRIMARY KEY,
-                username TEXT NOT NULL,
-                password TEXT NOT NULL
+    def _init(self):
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    email TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    password TEXT NOT NULL
+                )
+            """)
+    
+    def get(self, email):
+        with sqlite3.connect(self.path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT username, password FROM users WHERE email = ?",
+                (email,)
             )
-        """)
-        self.conn.commit()
+            return cur.fetchone()
     
-    def get_user(self, email):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT username, password FROM users WHERE email = ?",
-            (email,)
-        )
-        return cursor.fetchone()
-    
-    def save_user(self, email, username, password):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO users (email, username, password) VALUES (?, ?, ?)",
-            (email, username, password)
-        )
-        self.conn.commit()
-    
-    def close(self):
-        self.conn.close()
+    def save(self, email, username, password):
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO users (email, username, password) VALUES (?, ?, ?)",
+                (email, username, password)
+            )
